@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Advanced Flight Simulator</title>
+  <style>
+    /* Remove default margins, hide overflow, and set a sky–like background */
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #87ceeb;
+    }
+    canvas {
+      display: block;
+    }
+    /* A simple HUD overlay */
+    #hud {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      color: #fff;
+      font-family: monospace;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 10px;
+      border-radius: 5px;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+  <!-- Heads-up display -->
+  <div id="hud">
+    <div>Speed: <span id="speed">0</span></div>
+    <div>Altitude: <span id="altitude">0</span></div>
+    <div>Throttle: <span id="throttle">0</span></div>
+    <div>Controls: Arrow keys (pitch/roll), Q/E (yaw), W/S (throttle)</div>
+  </div>
+
+  <!-- Include Three.js from CDN.
+       Make sure this script tag comes before our custom code -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+  <!-- Our custom script -->
+  <script>
+    // Wait until the window has loaded to ensure all scripts (including THREE) are ready.
+    window.addEventListener('load', function() {
+      // === Scene Setup ===
+      const scene = new THREE.Scene();
+      // Add some fog for atmosphere (the lower density creates a far‐off haze)
+      scene.fog = new THREE.FogExp2(0x87ceeb, 0.00005);
+
+      // === Camera Setup ===
+      // We use a perspective camera. It will be attached to our airplane to simulate a cockpit view.
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        1,
+        50000
+      );
+
+      // === Renderer Setup ===
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      // === Lighting ===
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+      scene.add(ambientLight);
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(100, 300, 100);
+      scene.add(directionalLight);
+
+      // === Terrain Generation ===
+      // A fractal‐like terrain generated using several sine waves for detail.
+      function terrainHeight(x, z) {
+        let y = 0;
+        let amp = 100;
+        let freq = 0.0005;
+        // Four octaves for a bit of fractal detail
+        for (let i = 0; i < 4; i++) {
+          y += amp * Math.sin(freq * x + freq * z);
+          amp *= 0.5;
+          freq *= 2.5;
+        }
+        return y;
+      }
+      const terrainWidth = 20000;
+      const terrainDepth = 20000;
+      const segments = 256;
+      const terrainGeometry = new THREE.PlaneGeometry(terrainWidth, terrainDepth, segments, segments);
+      terrainGeometry.rotateX(-Math.PI / 2); // Lay the plane flat (X-Z plane)
+      const positions = terrainGeometry.attributes.position;
+      for (let i = 0; i < positions.count; i++) {
+        const x = positions.getX(i);
+        const z = positions.getZ(i);
+        const y = terrainHeight(x, z);
+        positions.setY(i, y);
+      }
+      terrainGeometry.computeVertexNormals();
+      const terrainMaterial = new THREE.MeshLambertMaterial({ color: 0x228822 });
+      const terrainMesh = new THREE.Mesh(terrainGeometry, terrainMaterial);
+      scene.add(terrainMesh);
+
+      // === Airplane Setup (with Basic Physics) ===
+      // We represent the airplane as an Object3D that carries our camera.
+      const airplane = new THREE.Object3D();
+      airplane.position.set(0, 200, 0); // Start well above the terrain
+      scene.add(airplane);
+      
+      // Attach the camera to the airplane for a cockpit view.
+      camera.position.set(0, 5, 15); // Adjust to taste
+      airplane.add(camera);
+      
+      // Physics state variables:
+      let velocity = new THREE.Vector3(0, 0, -100); // initial velocity (in local forward direction)
+      let angularVelocity = new THREE.Vector3(0, 0, 0); // rotation rates around local axes (pitch, yaw, roll)
+      let throttle = 100; // initial throttle value
+
+      // Physics constants:
+      const g = 9.81; // gravitational acceleration
+      const dragCoefficient = 0.0005; // drag factor (tune for your desired "feel")
+      const controlFactor = 0.5; // how strongly controls affect rotation
+      const maxAngularSpeed = 0.05; // limit on angular velocity
+
+      // === Input Handling ===
+      // Map keys to control flags.
+      const controls = {
+        pitchUp: false,
+        pitchDown: false,
+        rollLeft: false,
+        rollRight: false,
+        yawLeft: false,
+        yawRight: false,
+        throttleUp: false,
+        throttleDown: false
+      };
+      window.addEventListener('keydown', function(event) {
+        switch(event.key.toLowerCase()){
+          case "arrowup": controls.pitchUp = true; break;
+          case "arrowdown": controls.pitchDown = true; break;
+          case "arrowleft": controls.rollLeft = true; break;
+          case "arrowright": controls.rollRight = true; break;
+          case "q": controls.yawLeft = true; break;
+          case "e": controls.yawRight = true; break;
+          case "w": controls.throttleUp = true; break;
+          case "s": controls.throttleDown = true; break;
+        }
+      });
+      window.addEventListener('keyup', function(event) {
+        switch(event.key.toLowerCase()){
+          case "arrowup": controls.pitchUp = false; break;
+          case "arrowdown": controls.pitchDown = false; break;
+          case "arrowleft": controls.rollLeft = false; break;
+          case "arrowright": controls.rollRight = false; break;
+          case "q": controls.yawLeft = false; break;
+          case "e": controls.yawRight = false; break;
+          case "w": controls.throttleUp = false; break;
+          case "s": controls.throttleDown = false; break;
+        }
+      });
+
+      // === Clock for Delta Time ===
+      const clock = new THREE.Clock();
+
+      // === Main Animation Loop ===
+      function animate() {
+        requestAnimationFrame(animate);
+        const dt = clock.getDelta(); // elapsed time in seconds
+
+        // --- Process Input for Rotational (Angular) Motion ---
+        const pitchInput = (controls.pitchDown ? 1 : 0) - (controls.pitchUp ? 1 : 0);
+        const yawInput   = (controls.yawLeft   ? 1 : 0) - (controls.yawRight ? 1 : 0);
+        const rollInput  = (controls.rollRight ? 1 : 0) - (controls.rollLeft  ? 1 : 0);
+
+        angularVelocity.x += pitchInput * controlFactor * dt;
+        angularVelocity.y += yawInput   * controlFactor * dt;
+        angularVelocity.z += rollInput  * controlFactor * dt;
+        angularVelocity.x = THREE.MathUtils.clamp(angularVelocity.x, -maxAngularSpeed, maxAngularSpeed);
+        angularVelocity.y = THREE.MathUtils.clamp(angularVelocity.y, -maxAngularSpeed, maxAngularSpeed);
+        angularVelocity.z = THREE.MathUtils.clamp(angularVelocity.z, -maxAngularSpeed, maxAngularSpeed);
+        angularVelocity.multiplyScalar(0.98);
+        const deltaEuler = new THREE.Euler(
+          angularVelocity.x * dt,
+          angularVelocity.y * dt,
+          angularVelocity.z * dt,
+          'XYZ'
+        );
+        const deltaQuat = new THREE.Quaternion().setFromEuler(deltaEuler);
+        airplane.quaternion.multiply(deltaQuat);
+
+        // --- Throttle Control ---
+        if (controls.throttleUp) throttle += 10 * dt;
+        if (controls.throttleDown) throttle -= 10 * dt;
+        throttle = THREE.MathUtils.clamp(throttle, 10, 300);
+
+        // --- Update Linear Physics ---
+        const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(airplane.quaternion).normalize();
+        const thrustForce = forward.clone().multiplyScalar(throttle);
+        const gravityForce = new THREE.Vector3(0, -g * 20, 0);
+        const dragForce = velocity.clone().multiplyScalar(-dragCoefficient * velocity.length());
+        const acceleration = new THREE.Vector3();
+        acceleration.add(thrustForce);
+        acceleration.add(gravityForce);
+        acceleration.add(dragForce);
+        velocity.addScaledVector(acceleration, dt);
+        airplane.position.addScaledVector(velocity, dt);
+
+        // --- Prevent Crashing into the Terrain ---
+        const terrainY = terrainHeight(airplane.position.x, airplane.position.z);
+        if (airplane.position.y < terrainY + 10) { // 10 units clearance
+          airplane.position.y = terrainY + 10;
+          if (velocity.y < 0) velocity.y = 0;
+        }
+
+        // --- Update HUD ---
+        document.getElementById('speed').textContent = velocity.length().toFixed(1);
+        document.getElementById('altitude').textContent = (airplane.position.y - terrainY).toFixed(1);
+        document.getElementById('throttle').textContent = throttle.toFixed(1);
+
+        // --- Render the Scene ---
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // === Handle Window Resize ===
+      window.addEventListener('resize', function() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    });
+  </script>
+</body>
+</html>
