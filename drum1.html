@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Epic Drum Machine Sequencer</title>
+  <style>
+    body {
+      background-color: #222;
+      color: #eee;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+    }
+    h1 {
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <!-- The UI for the drum machine will be dynamically created by the script -->
+  <script language="javascript">
+
+(function() {
+  // Create Audio Context
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  const audioContext = new AudioContext();
+
+  //────────────────────────────
+  // Create a Fullscreen Canvas for Visuals
+
+  function initCanvas() {
+    const canvas = document.createElement('canvas');
+    canvas.id = 'visualizer';
+    // Make sure the canvas fills the viewport and stays behind the UI.
+    canvas.style.position = 'fixed';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100vw';
+    canvas.style.height = '100vh';
+    canvas.style.zIndex = '-1';
+    document.body.appendChild(canvas);
+    // Set the internal drawing dimensions
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    return canvas;
+  }
+
+  const canvas = initCanvas();
+  const ctx = canvas.getContext('2d');
+
+  // Resize canvas if the window size changes
+  window.addEventListener('resize', () => {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  });
+
+  //────────────────────────────
+  // Global Sequencer Settings
+
+  let bpm = 120;
+  const steps = 16;
+  let intervalTime = (60 / bpm) / 4; // 16th-note interval in seconds
+  let currentStep = 0;
+  let sequencerInterval = null;
+  let isPlaying = false;
+
+  // Pattern storage: Each instrument has an array of 16 booleans (one per step)
+  const pattern = {
+    kick: new Array(steps).fill(false),
+    snare: new Array(steps).fill(false),
+    hihat: new Array(steps).fill(false)
+  };
+
+  //────────────────────────────
+  // Audio Graph: Master Gain, Reverb, and Visualizer Analyser
+
+  const masterGain = audioContext.createGain();
+  masterGain.gain.value = 0.8;
+
+  // Dry/Wet mix for reverb
+  const dryGain = audioContext.createGain();
+  dryGain.gain.value = 0.8;
+  const wetGain = audioContext.createGain();
+  wetGain.gain.value = 0.3;
+
+  // Create a Convolver node using a generated impulse response for reverb
+  const convolver = audioContext.createConvolver();
+  convolver.buffer = createReverbBuffer(2, 2); // 2 seconds impulse with decay factor 2
+
+  // Connect the nodes: masterGain splits into dry and wet paths.
+  masterGain.connect(dryGain);
+  masterGain.connect(convolver);
+  convolver.connect(wetGain);
+  dryGain.connect(audioContext.destination);
+  wetGain.connect(audioContext.destination);
+
+  // Create an Analyser node to drive the visuals.
+  const analyser = audioContext.createAnalyser();
+  analyser.fftSize = 256;
+  masterGain.connect(analyser);
+
+  //────────────────────────────
+  // Utility: Create an impulse response for our reverb
+  function createReverbBuffer(duration, decay) {
+    const sampleRate = audioContext.sampleRate;
+    const length = sampleRate * duration;
+    const impulse = audioContext.createBuffer(2, length, sampleRate);
+    for (let channel = 0; channel < 2; channel++) {
+      let channelData = impulse.getChannelData(channel);
+      for (let i = 0; i < length; i++) {
+        // Random noise with exponential decay
+        channelData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+      }
+    }
+    return impulse;
+  }
+
+  //────────────────────────────
+  // Synthesized Drum Sounds
+
+  // Kick: Sine oscillator with a fast exponential decay and falling pitch.
+  function playKick(time) {
+    const osc = audioContext.createOscillator();
+    const kickGain = audioContext.createGain();
+    osc.frequency.setValueAtTime(150, time);
+    osc.frequency.exponentialRampToValueAtTime(0.001, time + 0.5);
+    kickGain.gain.setValueAtTime(1, time);
+    kickGain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+    osc.connect(kickGain);
+    kickGain.connect(masterGain);
+    osc.start(time);
+    osc.stop(time + 0.5);
+  }
+
+  // Pre–generate a noise buffer for the snare (for efficiency)
+  const noiseBuffer = (function() {
+    const bufferSize = audioContext.sampleRate * 0.2;
+    const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    return buffer;
+  })();
+
+  // Snare: A burst of white noise filtered with a high–pass filter and an amplitude envelope.
+  function playSnare(time) {
+    const noiseSource = audioContext.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'highpass';
+    noiseFilter.frequency.setValueAtTime(1000, time);
+    noiseSource.connect(noiseFilter);
+    const noiseGain = audioContext.createGain();
+    noiseGain.gain.setValueAtTime(1, time);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    noiseSource.start(time);
+    noiseSource.stop(time + 0.2);
+  }
+
+  // Hi–Hat: A short noise burst (with a very short envelope) filtered to emphasize high frequencies.
+  function playHiHat(time) {
+    const bufferSize = audioContext.sampleRate * 0.05;
+    const buffer = audioContext.createBuffer(1, bufferSize, audioContext.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    const noiseSource = audioContext.createBufferSource();
+    noiseSource.buffer = buffer;
+    const noiseFilter = audioContext.createBiquadFilter();
+    noiseFilter.type = 'highpass';
+    noiseFilter.frequency.setValueAtTime(7000, time);
+    noiseSource.connect(noiseFilter);
+    const noiseGain = audioContext.createGain();
+    noiseGain.gain.setValueAtTime(0.7, time);
+    noiseGain.gain.exponentialRampToValueAtTime(0.01, time + 0.05);
+    noiseFilter.connect(noiseGain);
+    noiseGain.connect(masterGain);
+    noiseSource.start(time);
+    noiseSource.stop(time + 0.05);
+  }
+
+  //────────────────────────────
+  // Sequencer Logic & UI Interaction
+
+  // Highlight the current step (adds a red outline to cells in that column)
+  function highlightStep(step) {
+    const cells = document.querySelectorAll('td[data-step]');
+    cells.forEach(cell => {
+      if (parseInt(cell.dataset.step) === step) {
+        cell.style.outline = "2px solid red";
+      } else {
+        cell.style.outline = "";
+      }
+    });
+  }
+
+  // Start the sequencer: schedule each step (16th notes) using setInterval
+  function startSequencer() {
+    // Resume AudioContext if needed (some browsers block auto–play)
+    if (audioContext.state === 'suspended') {
+      audioContext.resume();
+    }
+    isPlaying = true;
+    currentStep = 0;
+    intervalTime = (60 / bpm) / 4; // update interval (16th notes)
+    sequencerInterval = setInterval(() => {
+      const now = audioContext.currentTime;
+      // Check each instrument's pattern at the current step and trigger the sound if active
+      if (pattern.kick[currentStep]) {
+        playKick(now);
+      }
+      if (pattern.snare[currentStep]) {
+        playSnare(now);
+      }
+      if (pattern.hihat[currentStep]) {
+        playHiHat(now);
+      }
+      highlightStep(currentStep);
+      currentStep = (currentStep + 1) % steps;
+    }, intervalTime * 1000);
+  }
+
+  // Stop the sequencer
+  function stopSequencer() {
+    isPlaying = false;
+    clearInterval(sequencerInterval);
+    // Clear any step highlighting
+    highlightStep(-1);
+  }
+
+  //────────────────────────────
+  // Build the UI: Controls & Sequencer Grid
+
+  function initUI() {
+    // Container for UI elements
+    const container = document.createElement('div');
+    container.style.fontFamily = "sans-serif";
+    container.style.margin = "20px";
+    // Give the UI a higher z–index so it sits above the canvas
+    container.style.position = "relative";
+    container.style.zIndex = "1";
+    document.body.appendChild(container);
+
+    // Title
+    const title = document.createElement('h1');
+    title.textContent = "Epic Drum Machine Sequencer";
+    container.appendChild(title);
+
+    // BPM Control
+    const bpmLabel = document.createElement('label');
+    bpmLabel.textContent = "BPM: ";
+    container.appendChild(bpmLabel);
+
+    const bpmInput = document.createElement('input');
+    bpmInput.type = "number";
+    bpmInput.value = bpm;
+    bpmInput.min = 40;
+    bpmInput.max = 300;
+    bpmInput.style.marginRight = "20px";
+    bpmInput.addEventListener('change', function() {
+      bpm = parseInt(this.value);
+      // If playing, restart the sequencer with the new BPM
+      if (isPlaying) {
+        stopSequencer();
+        startSequencer();
+      }
+    });
+    container.appendChild(bpmInput);
+
+    // Play/Stop Button
+    const playButton = document.createElement('button');
+    playButton.textContent = "Play";
+    playButton.style.marginRight = "20px";
+    playButton.addEventListener('click', function() {
+      if (!isPlaying) {
+        startSequencer();
+        playButton.textContent = "Stop";
+      } else {
+        stopSequencer();
+        playButton.textContent = "Play";
+      }
+    });
+    container.appendChild(playButton);
+
+    // Clear Pattern Button
+    const resetButton = document.createElement('button');
+    resetButton.textContent = "Clear Pattern";
+    resetButton.addEventListener('click', function() {
+      for (let key in pattern) {
+        pattern[key] = new Array(steps).fill(false);
+      }
+      const cells = document.querySelectorAll('td[data-step]');
+      cells.forEach(cell => {
+        cell.style.backgroundColor = "";
+      });
+    });
+    container.appendChild(resetButton);
+
+    // Build the Sequencer Grid
+    const grid = document.createElement('table');
+    grid.style.borderCollapse = "collapse";
+    grid.style.marginTop = "20px";
+
+    // Header row (shows step numbers)
+    const headerRow = document.createElement('tr');
+    const emptyHeader = document.createElement('th');
+    emptyHeader.style.padding = "5px";
+    emptyHeader.style.border = "1px solid #ccc";
+    headerRow.appendChild(emptyHeader);
+    for (let i = 0; i < steps; i++) {
+      const th = document.createElement('th');
+      th.textContent = i + 1;
+      th.style.padding = "5px";
+      th.style.border = "1px solid #ccc";
+      headerRow.appendChild(th);
+    }
+    grid.appendChild(headerRow);
+
+    // Create a row for each instrument
+    const instruments = ["kick", "snare", "hihat"];
+    instruments.forEach(inst => {
+      const row = document.createElement('tr');
+      const labelCell = document.createElement('td');
+      labelCell.textContent = inst;
+      labelCell.style.padding = "5px";
+      labelCell.style.border = "1px solid #ccc";
+      row.appendChild(labelCell);
+      for (let i = 0; i < steps; i++) {
+        const cell = document.createElement('td');
+        cell.dataset.instrument = inst;
+        cell.dataset.step = i;
+        cell.style.width = "30px";
+        cell.style.height = "30px";
+        cell.style.border = "1px solid #ccc";
+        cell.style.textAlign = "center";
+        cell.style.cursor = "pointer";
+        // Toggle the step on click and update the cell color
+        cell.addEventListener('click', function() {
+          const instrument = this.dataset.instrument;
+          const step = parseInt(this.dataset.step);
+          pattern[instrument][step] = !pattern[instrument][step];
+          this.style.backgroundColor = pattern[instrument][step] ? "#4caf50" : "";
+        });
+        row.appendChild(cell);
+      }
+      grid.appendChild(row);
+    });
+    container.appendChild(grid);
+  }
+
+  //────────────────────────────
+  // Crazy Visuals: Animation Loop Driven by Audio Data
+
+  let rotation = 0; // For continuously rotating the visuals
+  function animate() {
+    requestAnimationFrame(animate);
+
+    // Create a trailing effect by drawing a semi–transparent rectangle over the whole canvas.
+    ctx.fillStyle = "rgba(0, 0, 0, 0.1)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Get frequency data from the analyser.
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    analyser.getByteFrequencyData(dataArray);
+
+    // Calculate the center and a base radius for the radial visuals.
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const baseRadius = Math.min(centerX, centerY) * 0.5;
+    rotation += 0.01; // slowly rotate the visuals
+
+    // Draw radial lines whose lengths and colors depend on the frequency data.
+    for (let i = 0; i < bufferLength; i++) {
+      const angle = (i / bufferLength) * Math.PI * 2 + rotation;
+      const value = dataArray[i];
+      // Scale the line length based on the frequency amplitude.
+      const lineLength = baseRadius + value;
+      const x = centerX + Math.cos(angle) * lineLength;
+      const y = centerY + Math.sin(angle) * lineLength;
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY);
+      ctx.lineTo(x, y);
+      // Color each line using a hue based on its position.
+      ctx.strokeStyle = `hsl(${(i / bufferLength) * 360}, 100%, 50%)`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+  animate();
+
+  //────────────────────────────
+  // Initialize the UI when the window loads
+  window.addEventListener('load', initUI);
+
+})();
+  </script>
+</body>
+</html>
+

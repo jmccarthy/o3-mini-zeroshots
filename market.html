@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Hyperscale Trading Desk Simulator</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: black;
+      overflow: hidden;
+      font-family: monospace;
+    }
+    /* The full-screen canvas for charts, flashing lights & messages */
+    #canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    /* Ticker tape container at the bottom */
+    #tickerTape {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 50px;
+      background: rgba(0, 0, 0, 0.8);
+      color: lime;
+      font-size: 24px;
+      overflow: hidden;
+      border-top: 2px solid red;
+    }
+    /* Ticker tape items will be positioned absolutely inside the ticker tape */
+    .tickerItem {
+      position: absolute;
+      top: 0;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="tickerTape"></div>
+  <script>
+    // Wait for the page to load
+    window.onload = function() {
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      
+      // Resize canvas to fill the browser window
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+      }
+      resizeCanvas();
+      window.addEventListener("resize", resizeCanvas);
+
+      /*** STOCK CANDLESTICK SIMULATION ***/
+      // Create a few absurd ticker symbols
+      let stocks = [];
+      let stockSymbols = ["LOL", "OMG", "WTF", "BRB"];
+      stockSymbols.forEach(symbol => {
+        let initialPrice = 100 + Math.random() * 400;
+        stocks.push({
+          symbol: symbol,
+          candles: [{
+            open: initialPrice,
+            high: initialPrice,
+            low: initialPrice,
+            close: initialPrice,
+            time: Date.now()
+          }],
+          lastCandleTime: Date.now()
+        });
+      });
+      const candleInterval = 3000; // Every 3 seconds a new candle is started
+      const maxCandles = 50;       // Maximum number of candles to show per chart
+
+      // Update candle data every 100ms
+      setInterval(() => {
+        let now = Date.now();
+        stocks.forEach(stock => {
+          let currentCandle = stock.candles[stock.candles.length - 1];
+          // A random fluctuation – up or down by up to ~5 points
+          let delta = (Math.random() - 0.5) * 5;
+          let newPrice = currentCandle.close + delta;
+          currentCandle.close = newPrice;
+          if (newPrice > currentCandle.high) currentCandle.high = newPrice;
+          if (newPrice < currentCandle.low) currentCandle.low = newPrice;
+          // If the current candle is older than candleInterval, start a new one
+          if (now - stock.lastCandleTime > candleInterval) {
+            stock.candles.push({
+              open: currentCandle.close,
+              high: currentCandle.close,
+              low: currentCandle.close,
+              close: currentCandle.close,
+              time: now
+            });
+            stock.lastCandleTime = now;
+            if (stock.candles.length > maxCandles) {
+              stock.candles.shift();
+            }
+          }
+        });
+      }, 100);
+
+      /*** TICKER TAPE SIMULATION ***/
+      const tickerTapeEl = document.getElementById("tickerTape");
+      let tickerItems = [];
+      const tickerSpeed = 100; // pixels per second
+      const tickerSymbols = ["LOL", "OMG", "FTW", "YOLO", "BRB", "HODL", "WTF", "LMAO", "ROFL", "SMH"];
+      
+      // Create a ticker tape item starting at position x
+      function createTickerItem(x) {
+        const div = document.createElement("div");
+        div.className = "tickerItem";
+        updateTickerItemText(div);
+        div.style.left = x + "px";
+        tickerTapeEl.appendChild(div);
+        return { el: div, x: x };
+      }
+      
+      // Generate random ticker text with a symbol, price, and an arrow with a change value
+      function updateTickerItemText(div) {
+        const sym = tickerSymbols[Math.floor(Math.random() * tickerSymbols.length)];
+        const price = (10 + Math.random() * 490).toFixed(2);
+        const change = (Math.random() * 10).toFixed(2);
+        const arrow = Math.random() > 0.5 ? "↑" : "↓";
+        div.textContent = `${sym} ${price} ${arrow}${change}`;
+      }
+      
+      // Create a row of ticker items that span more than the ticker tape width
+      let initialX = 0;
+      for (let i = 0; i < 15; i++) {
+        let item = createTickerItem(initialX);
+        initialX += item.el.offsetWidth + 50; // add a gap between items
+        tickerItems.push(item);
+      }
+
+      /*** FLASHING MESSAGES (e.g. "BUY!!!", "SELL!!!", etc.) ***/
+      let flashingMessages = [];
+      function addFlashingMessage() {
+        const messages = ["BUY!!!", "SELL!!!", "BOOM!!!", "RALLY!!!", "CRASH!!!"];
+        flashingMessages.push({
+          text: messages[Math.floor(Math.random() * messages.length)],
+          x: Math.random() * canvas.width * 0.8,
+          y: Math.random() * canvas.height * 0.8,
+          startTime: Date.now(),
+          duration: 1000 + Math.random() * 2000,
+          color: "hsl(" + Math.floor(Math.random() * 360) + ", 100%, 50%)"
+        });
+      }
+      // Occasionally (every 500ms) add a flashing message
+      setInterval(() => {
+        if (Math.random() < 0.3) { // 30% chance
+          addFlashingMessage();
+        }
+      }, 500);
+
+      /*** ANIMATION LOOP ***/
+      let lastTime = Date.now();
+      function animate() {
+        const now = Date.now();
+        const deltaTime = (now - lastTime) / 1000;
+        lastTime = now;
+        
+        // Clear the entire canvas
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw a bunch of flashing, moving lights
+        drawFlashingLights(ctx, now);
+        
+        // Divide the canvas vertically for each stock’s chart
+        const chartHeight = canvas.height / stocks.length;
+        stocks.forEach((stock, index) => {
+          const top = index * chartHeight;
+          drawCandlestickChart(ctx, stock, 0, top, canvas.width, chartHeight);
+          // Display the stock symbol at the top-left of each chart
+          ctx.fillStyle = "white";
+          ctx.font = "20px monospace";
+          ctx.fillText(stock.symbol, 10, top + 25);
+        });
+        
+        // Move ticker tape items leftwards – and if one goes off screen, update its text and send it back to the right
+        tickerItems.forEach(item => {
+          item.x -= tickerSpeed * deltaTime;
+          if (item.x + item.el.offsetWidth < 0) {
+            item.x = tickerTapeEl.offsetWidth;
+            updateTickerItemText(item.el);
+          }
+          item.el.style.left = item.x + "px";
+        });
+        
+        // Draw any flashing messages (with fade-out)
+        for (let i = flashingMessages.length - 1; i >= 0; i--) {
+          const msg = flashingMessages[i];
+          const elapsed = now - msg.startTime;
+          if (elapsed > msg.duration) {
+            flashingMessages.splice(i, 1);
+            continue;
+          }
+          const alpha = 1 - (elapsed / msg.duration);
+          ctx.font = "bold " + (50 + Math.random() * 20) + "px Impact";
+          ctx.fillStyle = msg.color;
+          ctx.globalAlpha = alpha;
+          ctx.fillText(msg.text, msg.x, msg.y);
+          ctx.globalAlpha = 1.0;
+        }
+        
+        requestAnimationFrame(animate);
+      }
+      requestAnimationFrame(animate);
+
+      /*** DRAWING FUNCTIONS ***/
+      
+      // Draw a candlestick chart for one stock in the specified rectangle
+      function drawCandlestickChart(ctx, stock, x, y, width, height) {
+        const candles = stock.candles;
+        if (candles.length === 0) return;
+        // Determine the price range among the candles
+        let minPrice = Math.min(...candles.map(c => c.low));
+        let maxPrice = Math.max(...candles.map(c => c.high));
+        const padding = (maxPrice - minPrice) * 0.1;
+        minPrice -= padding;
+        maxPrice += padding;
+        
+        const candleWidth = width / maxCandles;
+        // If there are fewer candles than maxCandles, right-align the chart
+        const numCandles = candles.length;
+        const offsetX = width - numCandles * candleWidth;
+        
+        candles.forEach((candle, i) => {
+          const cx = x + offsetX + i * candleWidth;
+          // Convert a price to a y coordinate (higher prices are higher up)
+          function priceToY(price) {
+            return y + height - ((price - minPrice) / (maxPrice - minPrice)) * height;
+          }
+          const openY = priceToY(candle.open);
+          const closeY = priceToY(candle.close);
+          const highY = priceToY(candle.high);
+          const lowY = priceToY(candle.low);
+          // Use green if the candle is up, red if down
+          const color = candle.close >= candle.open ? "lime" : "red";
+          // Draw the wick (high-to-low line)
+          ctx.strokeStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(cx + candleWidth / 2, highY);
+          ctx.lineTo(cx + candleWidth / 2, lowY);
+          ctx.stroke();
+          // Draw the body (open-to-close rectangle)
+          let rectY = Math.min(openY, closeY);
+          let rectHeight = Math.abs(closeY - openY);
+          if (rectHeight < 2) rectHeight = 2; // Ensure a visible minimum
+          ctx.fillStyle = color;
+          ctx.fillRect(cx + candleWidth * 0.1, rectY, candleWidth * 0.8, rectHeight);
+        });
+        
+        // Draw subtle grid lines
+        ctx.strokeStyle = "rgba(255,255,255,0.1)";
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 5; i++) {
+          const gy = y + i * height / 5;
+          ctx.beginPath();
+          ctx.moveTo(x, gy);
+          ctx.lineTo(x + width, gy);
+          ctx.stroke();
+        }
+      }
+      
+      // Draw a set of flashing lights in the background using oscillating colors and positions
+      function drawFlashingLights(ctx, time) {
+        for (let i = 0; i < 10; i++) {
+          const posX = (Math.sin(time / 1000 + i) + 1) / 2 * canvas.width;
+          const posY = (Math.cos(time / 1000 + i) + 1) / 2 * canvas.height;
+          const radius = 20 + 10 * Math.sin(time / 200 + i);
+          const r = Math.floor(128 + 127 * Math.sin(time / 100 + i));
+          const g = Math.floor(128 + 127 * Math.sin(time / 150 + i + 2));
+          const b = Math.floor(128 + 127 * Math.sin(time / 130 + i + 4));
+          ctx.beginPath();
+          ctx.arc(posX, posY, radius, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(" + r + "," + g + "," + b + ",0.3)";
+          ctx.fill();
+        }
+      }
+    };
+  </script>
+</body>
+</html>
+

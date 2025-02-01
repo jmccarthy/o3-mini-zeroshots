@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Psychedelic Drum Machine</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+    canvas { 
+      display: block;
+    }
+    /* Overlay to prompt user interaction for AudioContext */
+    #startOverlay {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-size: 24px;
+      text-align: center;
+      padding: 20px;
+      background: rgba(0, 0, 0, 0.7);
+      border: 2px solid #fff;
+      border-radius: 8px;
+      cursor: pointer;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="startOverlay">Click anywhere to start the Epic Psychedelic Drum Machine!</div>
+  
+  <script>
+    // ===== Audio Setup =====
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    const audioCtx = new AudioContext();
+    
+    // Master gain node
+    const masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.8;
+    
+    // Analyser node for the visuals
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    masterGain.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    
+    // ===== Drum Synth Functions =====
+    // Kick: sine oscillator with a rapid pitch drop and exponential gain envelope.
+    function playKick(time) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(150, time);
+      osc.frequency.exponentialRampToValueAtTime(0.001, time + 0.5);
+      gain.gain.setValueAtTime(1, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+      osc.connect(gain);
+      gain.connect(masterGain);
+      osc.start(time);
+      osc.stop(time + 0.5);
+    }
+    
+    // Snare: filtered burst of white noise.
+    function playSnare(time) {
+      const bufferSize = audioCtx.sampleRate * 0.2;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+      const noiseFilter = audioCtx.createBiquadFilter();
+      noiseFilter.type = 'highpass';
+      noiseFilter.frequency.value = 1000;
+      noise.connect(noiseFilter);
+      const noiseGain = audioCtx.createGain();
+      noiseGain.gain.setValueAtTime(1, time);
+      noiseGain.gain.exponentialRampToValueAtTime(0.01, time + 0.2);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(masterGain);
+      noise.start(time);
+      noise.stop(time + 0.2);
+    }
+    
+    // Hi-hat: short burst of noise filtered through a bandpass filter.
+    function playHiHat(time) {
+      const bufferSize = audioCtx.sampleRate * 0.05;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+      const bandpass = audioCtx.createBiquadFilter();
+      bandpass.type = 'bandpass';
+      bandpass.frequency.value = 10000;
+      noise.connect(bandpass);
+      const hihatGain = audioCtx.createGain();
+      hihatGain.gain.setValueAtTime(0.7, time);
+      hihatGain.gain.exponentialRampToValueAtTime(0.01, time + 0.05);
+      bandpass.connect(hihatGain);
+      hihatGain.connect(masterGain);
+      noise.start(time);
+      noise.stop(time + 0.05);
+    }
+    
+    // ===== Drum Sequencer =====
+    // 16-step (sixteenth-note) sequencer.
+    const tempo = 120; // BPM
+    const sixteenthNoteTime = (60 / tempo) / 4;
+    let currentStep = 0;
+    let nextNoteTime = audioCtx.currentTime;
+    const scheduleAheadTime = 0.1; // seconds
+    
+    // Schedule each step: normal measures versus a fill every 4th measure.
+    function scheduleStep(step, time) {
+      const measure = Math.floor(step / 16);
+      const beatStep = step % 16;
+      
+      if (measure % 4 !== 3) {  // Normal measure
+        if (beatStep === 0 || beatStep === 8) {
+          playKick(time);
+        }
+        if (beatStep === 4 || beatStep === 12) {
+          playSnare(time);
+        }
+        if (beatStep % 2 === 0) {
+          playHiHat(time);
+        }
+      } else {  // Fill measure
+        if (beatStep === 0 || beatStep === 8) {
+          playKick(time);
+        } else if (beatStep % 2 === 1) {
+          playSnare(time);
+        } else {
+          playHiHat(time);
+        }
+      }
+    }
+    
+    // The scheduler that queues drum events ahead of time.
+    function scheduler() {
+      while (nextNoteTime < audioCtx.currentTime + scheduleAheadTime) {
+        scheduleStep(currentStep, nextNoteTime);
+        nextNote();
+      }
+      setTimeout(scheduler, 25);
+    }
+    
+    function nextNote() {
+      nextNoteTime += sixteenthNoteTime;
+      currentStep++;
+      if (currentStep >= 16 * 1000) {
+        currentStep = currentStep % 16;
+      }
+    }
+    
+    // ===== Canvas & Visualizer Setup =====
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+    
+    // Prepare frequency data array for the analyser
+    const analyserData = new Uint8Array(analyser.frequencyBinCount);
+    
+    // ----- Visual Phase Definitions -----
+    // We rotate between three phases (15 sec each):
+    // "radial"  – rotating radial bars
+    // "swirl"   – swirling, pulsating circles
+    // "kaleido" – a kaleidoscopic mirror effect
+    const phaseDuration = 15000; // milliseconds per phase
+    const phaseNames = ["radial", "swirl", "kaleido"];
+    let startTime = null;
+    
+    // Phase 1: Radial Bars (with subtle rotation)
+    function drawRadialBars(time) {
+      // Trailing background
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      ctx.save();
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      ctx.translate(centerX, centerY);
+      const rotation = time * 0.0003;
+      ctx.rotate(rotation);
+      
+      const barCount = 64;
+      for (let i = 0; i < barCount; i++) {
+        const angle = (i / barCount) * Math.PI * 2;
+        // Use analyser data to modulate the bar length.
+        const barLength = (analyserData[i] || 0) * 0.8;
+        const innerRadius = Math.min(centerX, centerY) / 4;
+        const outerRadius = innerRadius + barLength;
+        const x1 = Math.cos(angle) * innerRadius;
+        const y1 = Math.sin(angle) * innerRadius;
+        const x2 = Math.cos(angle) * outerRadius;
+        const y2 = Math.sin(angle) * outerRadius;
+        ctx.strokeStyle = `hsl(${(i / barCount) * 360}, 100%, 50%)`;
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+    
+    // Phase 2: Swirling Pulses
+    function drawSwirl(time) {
+      // Gentle fade of the background.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      const maxRadius = Math.hypot(centerX, centerY);
+      const count = 50;
+      for (let i = 0; i < count; i++) {
+        // The angle rotates with time.
+        const angle = time * 0.0005 + i * (Math.PI * 2 / count);
+        // Radius oscillates with time and frequency data.
+        const radius = maxRadius * (0.3 + 0.2 * Math.sin(time * 0.002 + i));
+        const x = centerX + Math.cos(angle) * radius;
+        const y = centerY + Math.sin(angle) * radius;
+        const size = 20 + (analyserData[i] || 0) * 0.3;
+        ctx.fillStyle = `hsla(${(time / 10 + i * 10) % 360}, 100%, 50%, 0.7)`;
+        ctx.beginPath();
+        ctx.arc(x, y, size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    
+    // Phase 3: Kaleidoscopic Mirrors
+    function drawKaleido(time) {
+      // Darken the background to accentuate the effect.
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      const numSectors = 8;
+      const sectorAngle = (Math.PI * 2) / numSectors;
+      
+      // Create an offscreen canvas to draw the pattern.
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = canvas.width;
+      offCanvas.height = canvas.height;
+      const offCtx = offCanvas.getContext('2d');
+      
+      // Draw a pattern influenced by the analyser data.
+      offCtx.fillStyle = `hsla(${(time / 5) % 360}, 100%, 50%, 0.1)`;
+      offCtx.fillRect(0, 0, offCanvas.width, offCanvas.height);
+      offCtx.translate(centerX, centerY);
+      offCtx.rotate(time * 0.0003);
+      for (let i = 0; i < 20; i++) {
+        offCtx.beginPath();
+        const r = Math.random() * (Math.min(centerX, centerY) / 2);
+        offCtx.arc(0, 0, r, 0, Math.PI * 2);
+        offCtx.fillStyle = `hsla(${(time / 3 + i * 18) % 360}, 100%, 50%, 0.3)`;
+        offCtx.fill();
+      }
+      
+      // Draw the offscreen canvas into mirrored sectors.
+      ctx.save();
+      ctx.translate(centerX, centerY);
+      for (let i = 0; i < numSectors; i++) {
+        ctx.save();
+        ctx.rotate(i * sectorAngle);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(canvas.width, -canvas.height);
+        ctx.lineTo(canvas.width, canvas.height);
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(offCanvas, -centerX, -centerY);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+    
+    // Main Animation Loop: cycles through visual phases.
+    function animate(timestamp) {
+      if (!startTime) startTime = timestamp;
+      const elapsed = timestamp - startTime;
+      
+      // Update analyser data
+      analyser.getByteFrequencyData(analyserData);
+      
+      // Determine current phase based on elapsed time.
+      const phaseIndex = Math.floor(elapsed / phaseDuration) % phaseNames.length;
+      const currentPhase = phaseNames[phaseIndex];
+      
+      if (currentPhase === "radial") {
+        drawRadialBars(timestamp);
+      } else if (currentPhase === "swirl") {
+        drawSwirl(timestamp);
+      } else if (currentPhase === "kaleido") {
+        drawKaleido(timestamp);
+      }
+      
+      requestAnimationFrame(animate);
+    }
+    
+    // ===== Start Everything on User Interaction =====
+    // (Browsers require a gesture to resume the AudioContext.)
+    document.body.addEventListener('click', () => {
+      const overlay = document.getElementById('startOverlay');
+      if (overlay) {
+        overlay.parentNode.removeChild(overlay);
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+      scheduler();
+      requestAnimationFrame(animate);
+    }, { once: true });
+  </script>
+</body>
+</html>
+

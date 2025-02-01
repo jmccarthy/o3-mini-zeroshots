@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Tree Growth Animation</title>
+    <style>
+      body { margin: 0; overflow: hidden; }
+    </style>
+    <!-- Three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  </head>
+  <body>
+    <script>
+      // ----- Global variables and parameters -----
+      let scene, camera, renderer, tree;
+      const totalTime = 20; // seconds (approximate total animation time)
+      const maxOrbits = 3.5; // total camera orbits
+      const maxLevel = 4;    // levels of branching (trunk is level 0)
+      let startTime;         // time at which the animation started
+
+      // ----- Initialize the scene, camera, lights, ground, and tree -----
+      init();
+      animate();
+
+      function init() {
+        // Create scene and set a sky‐blue background.
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xa0d0ff);
+
+        // Set up a perspective camera.
+        camera = new THREE.PerspectiveCamera(
+          45,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          1000
+        );
+        // (The camera’s position will be updated each frame.)
+
+        // Set up renderer.
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // Add ambient and directional lights.
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 10, 5);
+        scene.add(directionalLight);
+
+        // Create a ground plane.
+        const planeGeometry = new THREE.PlaneGeometry(50, 50);
+        const planeMaterial = new THREE.MeshStandardMaterial({ color: 0x228822 });
+        const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+        plane.rotation.x = -Math.PI / 2;
+        scene.add(plane);
+
+        // Create a group to hold the entire tree.
+        tree = new THREE.Group();
+        scene.add(tree);
+
+        // Create the trunk (level 0). Parameters:
+        // • Origin at (0,0,0)
+        // • Direction upward (0,1,0)
+        // • Final length: 4 units, thickness: 0.2
+        // • Start growing at time 0 with a growth duration of 6 sec.
+        createBranch(tree, new THREE.Vector3(0, 0, 0),
+          new THREE.Vector3(0, 1, 0),
+          4, 0.2, 0, 0, 6);
+
+        startTime = performance.now() / 1000; // seconds
+      }
+
+      /**
+       * Recursively create a branch.
+       *
+       * @param {THREE.Object3D} parent - The parent object to which this branch is added.
+       * @param {THREE.Vector3} origin - The local origin (in the parent’s space) where the branch begins.
+       * @param {THREE.Vector3} direction - The unit vector along which the branch grows.
+       * @param {number} length - The final length of this branch.
+       * @param {number} thickness - The (final) thickness of the branch.
+       * @param {number} level - Current recursion level (0 = trunk).
+       * @param {number} startTimeBranch - Time (in seconds) when this branch should start growing.
+       * @param {number} growthDuration - How long (in seconds) it takes to grow to full length.
+       */
+      function createBranch(parent, origin, direction, length, thickness, level, startTimeBranch, growthDuration) {
+        // Create a cylinder geometry that extends from y = 0 to y = 1.
+        // (We will later scale y from 0 up to 'length'.)
+        const geometry = new THREE.CylinderGeometry(thickness * 0.5, thickness, 1, 8);
+        // Translate so that the base sits at y = 0.
+        geometry.translate(0, 0.5, 0);
+        const material = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+        const branch = new THREE.Mesh(geometry, material);
+        // Set the initial scale:
+        // x and z are set to the desired thickness; y starts nearly zero so it “grows.”
+        branch.scale.set(thickness, 0.001, thickness);
+        // Store growth parameters in userData.
+        branch.userData = {
+          finalLength: length,
+          startTime: startTimeBranch,
+          growthDuration: growthDuration
+        };
+
+        // Rotate the branch so that its local Y axis points in the 'direction'.
+        const quat = new THREE.Quaternion();
+        quat.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.clone().normalize());
+        branch.quaternion.copy(quat);
+
+        // Position the branch at the given origin.
+        branch.position.copy(origin);
+        parent.add(branch);
+
+        // If we haven’t reached the maximum branching level, add child branches.
+        if (level < maxLevel - 1) {
+          // In the branch’s local coordinates the tip is at (0,1,0).
+          // We attach children at that point.
+          const childOrigin = new THREE.Vector3(0, 1, 0);
+          const numChildren = 2;
+          for (let i = 0; i < numChildren; i++) {
+            // Choose a random angle (20°–40°) from the parent’s direction.
+            const angle = THREE.MathUtils.degToRad(20 + Math.random() * 20);
+            // Choose an azimuth offset (about –30° or +30° plus a little randomness).
+            const azimuth = THREE.MathUtils.degToRad((i === 0 ? -30 : 30) + (Math.random() - 0.5) * 20);
+            // Start with the parent's local Y axis.
+            const childDir = new THREE.Vector3(0, 1, 0);
+            // Apply rotations to tilt the branch.
+            childDir.applyEuler(new THREE.Euler(angle, azimuth, 0, 'XYZ'));
+            childDir.normalize();
+
+            // Reduce length and thickness for the child.
+            const childLength = length * (0.7 + Math.random() * 0.1);
+            const childThickness = thickness * 0.7;
+            // Have the child start growing when its parent is nearly grown.
+            const childStartTime = startTimeBranch + growthDuration * 0.8;
+            // Use the same growth duration (so that the deepest branches finish around 20 sec).
+            const childGrowthDuration = growthDuration;
+            // Recursively create the child branch.
+            createBranch(branch, childOrigin, childDir,
+              childLength, childThickness, level + 1, childStartTime, childGrowthDuration);
+          }
+        }
+      }
+
+      /**
+       * Recursively update the “growth” (i.e. scale.y) of branches based on elapsed time.
+       *
+       * @param {THREE.Object3D} object - A branch (or group) in the tree.
+       * @param {number} elapsed - Time (in seconds) elapsed since the animation started.
+       */
+      function updateGrowth(object, elapsed) {
+        if (object.userData && typeof object.userData.startTime === 'number') {
+          const t = elapsed - object.userData.startTime;
+          const factor = THREE.MathUtils.clamp(t / object.userData.growthDuration, 0, 1);
+          // Animate the branch’s length: its final y‐scale is the branch’s full length.
+          object.scale.y = factor * object.userData.finalLength;
+        }
+        // Recurse for children.
+        if (object.children) {
+          object.children.forEach(child => updateGrowth(child, elapsed));
+        }
+      }
+
+      // ----- The animation loop -----
+      function animate() {
+        const currentTime = performance.now() / 1000;
+        const elapsed = currentTime - startTime;
+
+        // Update the growth of each branch in the tree.
+        updateGrowth(tree, elapsed);
+
+        // ----- Update the camera position to orbit around the tree. -----
+        // Compute the orbit angle: over totalTime seconds, the camera completes maxOrbits orbits.
+        const angle = THREE.MathUtils.clamp(elapsed / totalTime, 0, 1) * maxOrbits * Math.PI * 2;
+        const radius = 10;
+        // For a cinematic look, keep the camera at a constant height.
+        const camY = 5;
+        camera.position.set(radius * Math.cos(angle), camY, radius * Math.sin(angle));
+
+        // Have the camera look at the tree’s “heart.”
+        // Here we choose the tip of the trunk (which is tree.children[0]) as a target.
+        const trunk = tree.children[0];
+        if (trunk) {
+          // The trunk’s tip in local coordinates is (0,1,0); convert it to world coordinates.
+          const tipLocal = new THREE.Vector3(0, 1, 0);
+          const tipWorld = tipLocal.applyMatrix4(trunk.matrixWorld);
+          camera.lookAt(tipWorld);
+        } else {
+          camera.lookAt(0, 0, 0);
+        }
+
+        renderer.render(scene, camera);
+
+        // Continue the animation until totalTime seconds have elapsed.
+        if (elapsed < totalTime) {
+          requestAnimationFrame(animate);
+        }
+      }
+
+      // ----- Handle window resizing -----
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    </script>
+  </body>
+</html>
+

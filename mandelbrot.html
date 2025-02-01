@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Zooming Mandelbrot Animation</title>
+    <style>
+      /* Make the canvas fill the whole window with a black background */
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #000;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="glcanvas"></canvas>
+
+    <!-- Vertex shader: simply passes through the vertex positions -->
+    <script id="vertex-shader" type="x-shader/x-vertex">
+      attribute vec4 aVertexPosition;
+      void main(void) {
+        gl_Position = aVertexPosition;
+      }
+    </script>
+
+    <!-- Fragment shader: compute the Mandelbrot set and colorize it -->
+    <script id="fragment-shader" type="x-shader/x-fragment">
+      #ifdef GL_ES
+      precision highp float;
+      #endif
+
+      uniform vec2 uResolution; // Canvas resolution (in pixels)
+      uniform float uZoom;      // Zoom factor (grows exponentially)
+      uniform vec2 uCenter;     // Center point in the complex plane
+      uniform float uTime;      // Elapsed time
+
+      // Compute the number of iterations for the Mandelbrot function
+      int mandelbrot(vec2 c) {
+          vec2 z = vec2(0.0);
+          int iterations = 0;
+          const int maxIterations = 100;
+          for (int i = 0; i < maxIterations; i++) {
+              if (dot(z, z) > 4.0) break;
+              // z = z^2 + c in complex number arithmetic:
+              z = vec2(z.x*z.x - z.y*z.y, 2.0*z.x*z.y) + c;
+              iterations++;
+          }
+          return iterations;
+      }
+
+      void main(void) {
+          // Map each pixel to a coordinate in the complex plane.
+          // The coordinate system is adjusted so that the vertical range fits nicely.
+          vec2 uv = (gl_FragCoord.xy - 0.5 * uResolution.xy) / uResolution.y;
+          // Apply the zoom and center offset:
+          vec2 c = uv / uZoom + uCenter;
+
+          int iter = mandelbrot(c);
+
+          // Normalize the iteration count for coloring
+          float t = float(iter) / 100.0;
+
+          // Create a smooth, cycling color palette using cosine waves.
+          // Feel free to experiment with the parameters for different effects.
+          vec3 color = vec3(0.5 + 0.5 * cos(6.2831 * t + vec3(0.0, 0.5, 1.0)));
+
+          // If the point is likely in the Mandelbrot set, set it to black.
+          if (iter == 100) {
+              color = vec3(0.0);
+          }
+
+          gl_FragColor = vec4(color, 1.0);
+      }
+    </script>
+
+    <!-- Main JavaScript code: initialize WebGL, compile shaders, and animate -->
+    <script>
+      (function() {
+        const canvas = document.getElementById("glcanvas");
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Get the WebGL context
+        const gl =
+          canvas.getContext("webgl") ||
+          canvas.getContext("experimental-webgl");
+        if (!gl) {
+          alert("Your browser does not support WebGL.");
+          return;
+        }
+
+        // Helper: load and compile a shader from an HTML script element
+        function getShader(gl, id) {
+          const shaderScript = document.getElementById(id);
+          if (!shaderScript) return null;
+          const shaderSource = shaderScript.text;
+          let shader;
+          if (shaderScript.type === "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+          } else if (shaderScript.type === "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+          } else {
+            return null;
+          }
+          gl.shaderSource(shader, shaderSource);
+          gl.compileShader(shader);
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(
+              "An error occurred compiling the shaders: " +
+                gl.getShaderInfoLog(shader)
+            );
+            return null;
+          }
+          return shader;
+        }
+
+        // Load shaders
+        const vertexShader = getShader(gl, "vertex-shader");
+        const fragmentShader = getShader(gl, "fragment-shader");
+
+        // Create and link the shader program
+        const shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+          alert("Unable to initialize the shader program.");
+          return;
+        }
+        gl.useProgram(shaderProgram);
+
+        // Look up the locations of the shader uniforms
+        const uResolution = gl.getUniformLocation(shaderProgram, "uResolution");
+        const uZoom = gl.getUniformLocation(shaderProgram, "uZoom");
+        const uCenter = gl.getUniformLocation(shaderProgram, "uCenter");
+        const uTime = gl.getUniformLocation(shaderProgram, "uTime");
+
+        // Set up a full-screen quad (two triangles covering the viewport)
+        const vertices = new Float32Array([
+          -1.0, -1.0,
+           1.0, -1.0,
+          -1.0,  1.0,
+           1.0,  1.0,
+        ]);
+        const vertexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+
+        const aVertexPosition = gl.getAttribLocation(
+          shaderProgram,
+          "aVertexPosition"
+        );
+        gl.enableVertexAttribArray(aVertexPosition);
+        gl.vertexAttribPointer(aVertexPosition, 2, gl.FLOAT, false, 0, 0);
+
+        // Set up animation parameters:
+        let zoom = 1.0;
+        // We start centered on (-0.5, 0) which is classic for the Mandelbrot set.
+        const center = { x: -0.5, y: 0.0 };
+        const startTime = Date.now();
+
+        // Render loop
+        function render() {
+          const currentTime = Date.now();
+          const elapsed = (currentTime - startTime) / 1000.0;
+          // Exponential zoom: increases continuously over time.
+          zoom = Math.pow(1.05, elapsed);
+
+          // Update the viewport and clear the canvas
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+
+          // Pass uniforms to the shaders
+          gl.uniform2f(uResolution, canvas.width, canvas.height);
+          gl.uniform1f(uZoom, zoom);
+          gl.uniform2f(uCenter, center.x, center.y);
+          gl.uniform1f(uTime, elapsed);
+
+          // Draw the quad (which triggers the fragment shader for each pixel)
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          requestAnimationFrame(render);
+        }
+
+        render();
+
+        // Adjust canvas size when the window is resized
+        window.addEventListener("resize", () => {
+          canvas.width = window.innerWidth;
+          canvas.height = window.innerHeight;
+          gl.viewport(0, 0, canvas.width, canvas.height);
+        });
+      })();
+    </script>
+  </body>
+</html>
+

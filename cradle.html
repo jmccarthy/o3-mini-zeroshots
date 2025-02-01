@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Newton's Cradle 3D Animation</title>
+    <style>
+      body { margin: 0; overflow: hidden; }
+      canvas { display: block; }
+    </style>
+  </head>
+  <body>
+    <!-- Three.js is loaded from a CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+      // ----- Parameters and simulation settings -----
+      const nBalls = 5;             // number of balls
+      const ballRadius = 0.5;       // radius of each ball
+      const stringLength = 5;       // length of the pendulum string
+      const g = 9.8;                // gravitational acceleration
+      const dt = 1/60;              // simulation time step (in seconds)
+
+      // Collision “trigger” settings – we assume collisions occur near the bottom.
+      const collisionThetaThreshold = 0.2;     // radians: only check collision when |theta| is small
+      const collisionVelocityThreshold = 0.01;   // minimum difference in (approx.) horizontal speed to trigger swap
+
+      // Each ball is modeled as a pendulum with one degree of freedom (theta)
+      // We will store for each ball:
+      //   pivot: the fixed point from which the ball is suspended
+      //   theta: the current angular displacement (radians; 0 = vertical)
+      //   thetaDot: the angular velocity
+      //   mesh: the Three.js mesh (a sphere)
+      //   string: a line from pivot to the ball (to simulate the string)
+      const balls = [];
+      // We also track collision flags for adjacent pairs so that we don’t swap repeatedly.
+      const collisionFlags = new Array(nBalls-1).fill(false);
+
+      // ----- Three.js scene setup -----
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0xf0f0f0);
+
+      // Create a perspective camera.
+      const camera = new THREE.PerspectiveCamera(
+        45,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      // Position the camera so that the cradle is visible.
+      camera.position.set(0, 3, 12);
+      camera.lookAt(new THREE.Vector3(0, 0, 0));
+
+      // Create the WebGL renderer.
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      // Add some lights.
+      const ambientLight = new THREE.AmbientLight(0x888888);
+      scene.add(ambientLight);
+      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      directionalLight.position.set(10, 10, 10);
+      scene.add(directionalLight);
+
+      // Optional: add a simple ground plane.
+      const planeGeometry = new THREE.PlaneGeometry(20, 20);
+      const planeMaterial = new THREE.MeshPhongMaterial({ color: 0xdddddd, side: THREE.DoubleSide });
+      const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.y = -0.01;
+      scene.add(plane);
+
+      // ----- Create the Newton's Cradle balls -----
+      // We arrange the pivot points along the x‑axis so that at rest the spheres just touch.
+      // The pivot for ball i is at: 
+      //    x = (i - (nBalls-1)/2)* (2*ballRadius), y = stringLength, z = 0.
+      const pivotPoints = [];
+      for (let i = 0; i < nBalls; i++) {
+        const x = (i - (nBalls - 1) / 2) * (2 * ballRadius);
+        const y = stringLength;
+        const z = 0;
+        pivotPoints.push(new THREE.Vector3(x, y, z));
+      }
+
+      // Reuse one sphere geometry and material for all balls.
+      const sphereGeometry = new THREE.SphereGeometry(ballRadius, 32, 32);
+      const sphereMaterial = new THREE.MeshPhongMaterial({ color: 0x156289, shininess: 50 });
+
+      // Material for the string (a simple line).
+      const stringMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+
+      // Create ball objects.
+      for (let i = 0; i < nBalls; i++) {
+        // Initial condition: pull the leftmost ball to the side.
+        // (If you want to pull more than one ball, adjust the initial theta values here.)
+        let theta = 0;
+        if (i === 0) {
+          theta = -0.5;  // negative: displaced to the left relative to vertical
+        }
+        const thetaDot = 0;
+
+        // Create the ball’s mesh.
+        const mesh = new THREE.Mesh(sphereGeometry, sphereMaterial);
+        scene.add(mesh);
+
+        // Create the string as a line between the pivot and the ball.
+        // We use a geometry with two vertices; these will be updated each frame.
+        const lineGeometry = new THREE.BufferGeometry();
+        const vertices = new Float32Array(2 * 3); // 2 vertices * 3 coordinates
+        lineGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        const line = new THREE.Line(lineGeometry, stringMaterial);
+        scene.add(line);
+
+        balls.push({
+          pivot: pivotPoints[i],
+          theta: theta,
+          thetaDot: thetaDot,
+          mesh: mesh,
+          string: line
+        });
+      }
+
+      // ----- Simulation update function -----
+      function updateSimulation() {
+        // First, update the motion of each pendulum ball using a simple Euler integration.
+        for (let i = 0; i < nBalls; i++) {
+          const ball = balls[i];
+          // Pendulum equation: theta'' = - (g / L) * sin(theta)
+          const thetaAcc = - (g / stringLength) * Math.sin(ball.theta);
+          ball.thetaDot += thetaAcc * dt;
+          ball.theta += ball.thetaDot * dt;
+        }
+
+        // Next, update the positions of the meshes and the “string” lines.
+        for (let i = 0; i < nBalls; i++) {
+          const ball = balls[i];
+          // The ball’s center position is determined by:
+          //    position = pivot + (L*sin(theta), -L*cos(theta), 0)
+          const x = ball.pivot.x + stringLength * Math.sin(ball.theta);
+          const y = ball.pivot.y - stringLength * Math.cos(ball.theta);
+          const z = ball.pivot.z;
+          ball.mesh.position.set(x, y, z);
+
+          // Update the string line geometry.
+          const positions = ball.string.geometry.attributes.position.array;
+          // First vertex: the pivot point.
+          positions[0] = ball.pivot.x;
+          positions[1] = ball.pivot.y;
+          positions[2] = ball.pivot.z;
+          // Second vertex: the ball’s center.
+          positions[3] = x;
+          positions[4] = y;
+          positions[5] = z;
+          ball.string.geometry.attributes.position.needsUpdate = true;
+        }
+
+        // ----- Simple collision detection and resolution -----
+        // (We check adjacent balls when both are near the bottom [|theta| small] and their
+        // relative horizontal speed exceeds a threshold. For equal masses a head‐on elastic
+        // collision swaps the speeds.)
+        for (let i = 0; i < nBalls - 1; i++) {
+          const ballA = balls[i];
+          const ballB = balls[i+1];
+          // Only check collisions when both balls are nearly vertical.
+          if (Math.abs(ballA.theta) < collisionThetaThreshold && Math.abs(ballB.theta) < collisionThetaThreshold) {
+            // Approximate horizontal (tangent) velocities (v = L * thetaDot)
+            const vA = stringLength * ballA.thetaDot;
+            const vB = stringLength * ballB.thetaDot;
+            // When ballA is moving right faster than ballB, a collision occurs.
+            if ((vA - vB) > collisionVelocityThreshold && !collisionFlags[i]) {
+              // Swap the angular velocities.
+              const temp = ballA.thetaDot;
+              ballA.thetaDot = ballB.thetaDot;
+              ballB.thetaDot = temp;
+              collisionFlags[i] = true;
+            }
+            else if ((vA - vB) < collisionVelocityThreshold) {
+              // Reset the collision flag when the relative speed is low.
+              collisionFlags[i] = false;
+            }
+          }
+          else {
+            // Not near collision.
+            collisionFlags[i] = false;
+          }
+        }
+      }
+
+      // ----- Animation loop -----
+      function animate() {
+        requestAnimationFrame(animate);
+        updateSimulation();
+        renderer.render(scene, camera);
+      }
+
+      animate();
+
+      // ----- Handle window resize -----
+      window.addEventListener('resize', onWindowResize, false);
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    </script>
+  </body>
+</html>
+
